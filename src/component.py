@@ -6,17 +6,67 @@ import csv
 import logging
 from datetime import datetime
 
+import json
+import openai
+from typing import Iterator, List, Dict
+from csv import DictReader, DictWriter
+
 from keboola.component.base import ComponentBase
 from keboola.component.exceptions import UserException
 
 # configuration variables
 KEY_API_TOKEN = '#api_token'
-KEY_PRINT_HELLO = 'print_hello'
+KEY_BASE_PROMPT = 'print_hello'
+KEY_TEXT_COLUMN = 'text_column'
 
 # list of mandatory parameters => if some is missing,
 # component will fail with readable message on initialization.
-REQUIRED_PARAMETERS = [KEY_PRINT_HELLO]
+REQUIRED_PARAMETERS = [KEY_API_TOKEN, KEY_BASE_PROMPT, KEY_TEXT_COLUMN]
 REQUIRED_IMAGE_PARS = []
+
+MODEL_NAME = "text-davinci-003"
+MODEL_BASE_TEMPERATURE = 0.7
+MODEL_BASE_MAX_TOKENS = 512
+MODEL_BASE_TOP_P = 1
+MODEL_BASE_FREQUENCY_PENALTY = 0
+MODEL_BASE_PRESENCE_PENALTY = 0
+
+
+def read_messages_from_file(file_name: str) -> Iterator[Dict]:
+    with open(file_name) as in_file:
+        yield from DictReader(in_file)
+
+
+def process_message(openai_key: str, prompt: str) -> str:
+    openai.api_key = openai_key
+    response = openai.Completion.create(
+        model=MODEL_NAME,
+        prompt=prompt,
+        temperature=MODEL_BASE_TEMPERATURE,
+        max_tokens=MODEL_BASE_MAX_TOKENS,
+        top_p=MODEL_BASE_TOP_P,
+        frequency_penalty=MODEL_BASE_FREQUENCY_PENALTY,
+        presence_penalty=MODEL_BASE_PRESENCE_PENALTY
+    )
+    return response.choices[0].text
+
+
+def generate_prompt(base_prompt: str, message: str) -> str:
+    return f"{base_prompt}\n\"\"\"{message}\"\"\""
+
+
+def analyze_messages_in_file(in_file_name: str,
+                             text_column: str,
+                             out_file_name: str,
+                             out_file_columns: List[str],
+                             base_prompt: str,
+                             openai_key: str) -> None:
+    with open(out_file_name, 'w') as out_file:
+        writer = DictWriter(out_file, out_file_columns)
+        for message in read_messages_from_file(in_file_name):
+            prompt = generate_prompt(base_prompt, message.get(text_column))
+            data = json.loads(process_message(openai_key, prompt))
+            writer.writerow({**message, "open_ai_output": data})
 
 
 class Component(ComponentBase):
@@ -38,39 +88,26 @@ class Component(ComponentBase):
         Main execution code
         """
 
-        # ####### EXAMPLE TO REMOVE
-        # check for missing configuration parameters
-        self.validate_configuration_parameters(REQUIRED_PARAMETERS)
-        self.validate_image_parameters(REQUIRED_IMAGE_PARS)
         params = self.configuration.parameters
-        # Access parameters in data/config.json
-        if params.get(KEY_PRINT_HELLO):
-            logging.info("Hello World")
 
-        # get last state data/in/state.json from previous run
-        previous_state = self.get_state_file()
-        logging.info(previous_state.get('some_state_parameter'))
+        text_column = params.get(KEY_TEXT_COLUMN)
+        base_prompt = params.get(KEY_BASE_PROMPT)
+        api_token = params.get(KEY_API_TOKEN)
 
-        # Create output table (Tabledefinition - just metadata)
-        table = self.create_out_table_definition('output.csv', incremental=True, primary_key=['timestamp'])
+        input_table = self.get_input_tables_definitions()[0]
 
-        # get file path of the table (data/out/tables/Features.csv)
-        out_table_path = table.full_path
-        logging.info(out_table_path)
+        final_columns = input_table.columns + ["open_ai_output"]
 
-        # DO whatever and save into out_table_path
-        with open(table.full_path, mode='wt', encoding='utf-8', newline='') as out_file:
-            writer = csv.DictWriter(out_file, fieldnames=['timestamp'])
-            writer.writeheader()
-            writer.writerow({"timestamp": datetime.now().isoformat()})
+        out_table = self.create_out_table_definition("analyzed_output", columns=final_columns)
 
-        # Save table manifest (output.csv.manifest) from the tabledefinition
-        self.write_manifest(table)
+        analyze_messages_in_file(in_file_name=input_table.full_path,
+                                 text_column=text_column,
+                                 out_file_name=out_table.full_path,
+                                 openai_key=api_token,
+                                 out_file_columns=final_columns,
+                                 base_prompt=base_prompt)
 
-        # Write new state - will be available next run
-        self.write_state_file({"some_state_parameter": "value"})
-
-        # ####### EXAMPLE TO REMOVE END
+        self.write_manifest(out_table)
 
 
 """
