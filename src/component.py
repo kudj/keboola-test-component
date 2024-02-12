@@ -14,6 +14,7 @@ from csv import DictReader, DictWriter
 from keboola.component.base import ComponentBase
 from keboola.component.exceptions import UserException
 
+
 # configuration variables
 KEY_API_TOKEN = '#api_token'
 KEY_BASE_PROMPT = 'print_hello'
@@ -88,11 +89,19 @@ class Component(ComponentBase):
         Main execution code
         """
 
+        logging.info("state file")
+
+        now = datetime.now()
+        self.write_state_file({"some_state_parameter": now.strftime('%H:%M:%S')})
+
         params = self.configuration.parameters
 
         text_column = params.get(KEY_TEXT_COLUMN)
         base_prompt = params.get(KEY_BASE_PROMPT)
         api_token = params.get(KEY_API_TOKEN)
+
+        if base_prompt == "raise_exception":
+            raise UserException("This is a user exception")
 
         input_table = self.get_input_tables_definitions()[0]
 
